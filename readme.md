@@ -22,6 +22,8 @@
 
 ## What is available
 
+*These files need to be downloaded because of GitHub file size limit [mediafire](https://www.mediafire.com/folder/0cjvvtn59eo32/hp2randomaudiomod)*
+
 In the subfolder langs are 15 different folders for all the different HP2PC langs that have voicelines (there are a few without voicelines like Chinese and Thai). Each of those language folders container three files and one folder. The first file is `AllDialog.{lang_code_uppercase}_uax`. These is the compressed audio files from unreal engine of that language in the game. 
 
 Next to that is also the file `BumpDialog.{lang_code}`. This file contains all the subtitles from all the bumpdialogs of that language that are available in the game.
