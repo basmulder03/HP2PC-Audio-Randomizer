@@ -1,3 +1,5 @@
 backup/
 lines/
 ready_for_export/
+langs/
+**/**.zip

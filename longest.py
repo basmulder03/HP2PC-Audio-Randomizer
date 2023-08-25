@@ -2,12 +2,13 @@ import wave
 import contextlib
 from os import path, listdir, makedirs, getcwd
 import chardet
-from random import choice
 from shutil import copy, rmtree
 from tqdm import tqdm
 import logging
 from tqdm.contrib.logging import logging_redirect_tqdm
 from operator import attrgetter
+from json import loads, dumps
+from math import inf
 
 LOG = logging.getLogger(__name__)
 
@@ -32,12 +33,15 @@ lang_map = {
 }
 
 class VoiceLine:    
-    def __init__(self, key: str, lang: str, voiceLine: str):
+    def __init__(self, key: str, lang: str, voiceLine: str, duration: float = -1):
         self.lang = lang
         self.key = key
         self.voiceLine = voiceLine
         self.wavFile = path.join(cdir, 'langs', lang, 'audio', f"{key}.wav")
-        self.duration = self.get_wav_duration()
+        if duration <= 0:
+            self.duration = self.get_wav_duration() or -1
+        else:
+            self.duration = duration
         
     def get_wav_file_path(self):
         p = path.join(cdir, 'langs', self.lang, 'audio')
@@ -61,139 +65,123 @@ class VoiceLine:
         return f'{{\n\t"lang": "{self.lang}",\n\t"key": "{self.key}",\n\t"voiceLine": "{self.voiceLine}",\n\t"duration": {self.get_wav_duration()}\n}}\n'
 
 
+def voiceline_from_json(d):
+    return VoiceLine(d['key'], d['lang'], d['voiceLine'], d['duration'])
+
+
 def get_encoding(file):
     with open(file, 'rb') as raw_file:
         return chardet.detect(raw_file.read())
 
+bumppath = './backup/bump'
+voicepath = './backup/voice'
 
+storage_path = './ready_for_export/longest_lines'
+audio_path = path.join(storage_path, 'audio_files')
+lines_path = path.join(storage_path, 'system')
+
+empty_voiceline = VoiceLine('', '', '')
 
 def main():
-    bumplines = {}
-    voicelines = {}
-
-    langs = listdir('./langs')
-
-    bumpline_keys = set()
-    voiceline_keys = set()
-    
-    for lang in tqdm(langs, desc="Extracting all voicelines for all different languages", unit="language"):     
-        # Load all the textual voicelines inside the program
-        enc = get_encoding(path.join(cdir, 'langs', lang, f"BumpDialog.{lang}"))
-        with open(path.join(cdir, 'langs', lang, f"BumpDialog.{lang}"), 'r', encoding=enc['encoding']) as b:
-            lines = b.read().strip().split("\n")[1:]
-            for line in lines:
-                key, text = line.split("=")
-                if not key in bumplines:
-                    bumplines[key] = {}
-                bumpline_keys.add(key)
-                vl = VoiceLine(key, lang, text)
-                if vl.exists():
-                    bumplines[key][lang] = vl
-
-        enc = get_encoding(path.join(cdir, 'langs', lang, f"HpDialog.{lang}"))
-        with open(path.join(cdir, 'langs', lang, f"HpDialog.{lang}"), 'r', encoding=enc['encoding']) as d:
-            lines = d.read().strip().split("\n")[1:]
-            for line in lines:
-                key, text = line.split("=")
-                if not key in voicelines:
-                    voicelines[key] = {}
-                voiceline_keys.add(key)
-                vl = VoiceLine(key, lang, text)
-                if vl.exists():
-                    voicelines[key][lang] = vl
-                    
-    if not path.exists('./lines'):
-        makedirs("./lines")
-                    
-    with open('./lines/bumplines.keys', 'w') as bl:
-        bumplines_sorted_list = [f"{line}\n" for line in bumpline_keys]
-        bumplines_sorted_list.sort()
-        bl.writelines(bumplines_sorted_list)
-    with open('./lines/voicelines.keys', 'w') as vl:
-        voicelines_sorted_list = [f"{line}\n" for line in voiceline_keys]
-        voicelines_sorted_list.sort()
-        vl.writelines(voicelines_sorted_list)
-    
-    for key in tqdm(bumplines.keys(), desc="Backing up bumplines", unit="line"):
-        if not path.exists(f'./backup/bump/{key}'):
-            makedirs(f'./backup/bump/{key}')
-        for lang in tqdm(bumplines[key].keys(), desc=f"Backing up langs, for line {key}", unit="lang", leave=False):
-            with open(f'./backup/bump/{key}/{lang}.json', 'w', encoding='utf-16') as kll:
-                kll.write(str(bumplines[key][lang]))
-                
-    for key in tqdm(voicelines.keys(), desc="Backing up voicelines", unit="line"):
-        if not path.exists(f'./backup/voice/{key}'):
-            makedirs(f'./backup/voice/{key}')
-        for lang in tqdm(voicelines[key].keys(), desc=f"Backing up langs, for line {key}", unit="lang", leave=False):
-            with open(f'./backup/voice/{key}/{lang}.json', 'w', encoding='utf-16') as kll:
-                kll.write(str(voicelines[key][lang]))            
+    if not path.exists('./backup'):
+        print('Run main program first, to generate the backup folder')
+        return
+    else:
+        if not path.exists(bumppath):
+            print('Bumplines not available')
+            return
+        if not path.exists(voicepath):
+            print('Voicelines not available')
+            return
         
-        
-    # pick a random voicelines from each voicelines
-    folder = 'longest_lines'
-    if path.exists(f"./ready_for_export/{folder}"):
-        rmtree(f'ready_for_export/{folder}')
-    makedirs(f"./ready_for_export/{folder}/Sounds")
-    makedirs(f"./ready_for_export/{folder}/system")
+    # create the folder that stores the files
+    if path.exists('./ready_for_export/longest_lines'):
+        rmtree(storage_path)
+    makedirs(path.join(storage_path, 'Sounds'))
+    makedirs(path.join(storage_path, 'system'))
+    makedirs(audio_path)
     
-    bumplines_str = "[All]\n"
-    voicelines_str = "[All]\n"
+    # Get the longest voicelines
+    voicelines = listdir(voicepath)
     
-    bumplines_missing_list = []
-    voicelines_missing_list = []
+    voicelines_lines = "[All]\n"
     
-    used_langs = {}
+    voicelines_langs_amount = {}
     
-    with logging_redirect_tqdm():  
-        for key in tqdm(bumplines.keys(), desc="Getting random bumplines", unit="line"):
-            if len(list(bumplines[key])) > 0:
-                # lang = choice(list(bumplines[key].keys()))
-                # line = bumplines[key][lang]
-                line = max(list(bumplines[key].values()), key=attrgetter('duration'))
-                lang = line.lang
-                while line.get_wav_duration() <= 0:
-                    lang = choice(list(bumplines[key].keys()))
-                    line = bumplines[key][lang]
-                used_langs[lang] = used_langs.get(lang, 0) + 1
-                split_line = line.voiceLine.split("]")
-                bumplines_str += f"{line.key}={split_line[0]}][{lang_map[lang]}] {split_line[1]}\n"
-                copy(line.wavFile, path.join(cdir, 'ready_for_export', str(folder), 'Sounds', f"{line.key}.wav"))
-            else: 
-                bumplines_missing_list.append(line)
-                
-        for key in tqdm(voicelines.keys(), desc="Getting random voicelines", unit="line"):
-            if len(list(voicelines[key])) > 0:
-                # lang = choice(list(voicelines[key].keys()))
-                # line = voicelines[key][lang]
-                line = max(list(voicelines[key].values()), key=attrgetter('duration'))
-                lang = line.lang
-                while line.get_wav_duration() <= 0:
-                    lang = choice(list(voicelines[key].keys()))
-                    line = voicelines[key][lang]
-                used_langs[lang] = used_langs.get(lang, 0) + 1
-                split_line = line.voiceLine.split("]")
-                voicelines_str += f"{line.key}={split_line[0]}][{lang_map[lang]}] {split_line[1]}\n"
-                copy(line.wavFile, path.join(cdir, 'ready_for_export', str(folder), 'Sounds', f"{line.key}.wav"))
-            else: 
-                voicelines_missing_list.append(line)
-        
-        print(f"Missing {len(bumplines_missing_list)} bumplines\nMissing {len(voicelines_missing_list)} voicelines")
-        
-        with open(f'./ready_for_export/{str(folder)}/missing-lines.txt', 'w', encoding='utf-16') as ml:     
-            lines = bumplines_missing_list + voicelines_missing_list  
-            ml.writelines([str(line) for line in lines])
+    for voiceline in tqdm(voicelines, desc='All Voicelines', unit="voiceline"):
+        available_langs = listdir(path.join(voicepath, voiceline))
+        current_longest = empty_voiceline
+        for lang in available_langs:
+            with open(path.join(voicepath, voiceline, lang), 'r', encoding='utf-16') as file:
+                lines = file.read()
+                json = loads(lines)
+                vl = voiceline_from_json(json)
+                if vl.duration > 0 and vl.duration > current_longest.duration and vl.exists():
+                    current_longest = vl   
+        if current_longest.key != "":   
+            split = current_longest.voiceLine.split("]")
+            if (len(split) > 1):
+                mood, line = split
+            mood += "]"
+            voicelines_lines += f"{current_longest.key}={mood}[{lang_map[current_longest.lang]}] {line}\n"
+            copy(current_longest.wavFile, path.join(audio_path, f"{current_longest.key}.wav"))
             
-        with open(f'./ready_for_export/{str(folder)}/system/BumpDialog.int', 'w', encoding='utf-16') as bl:
-            bl.write(bumplines_str)
+            voicelines_langs_amount[lang_map[current_longest.lang]] = voicelines_langs_amount.get(lang_map[current_longest.lang], 0) + 1
+        else:
+            # print(voiceline, current_longest)
+            pass
+        
+    with open(path.join(lines_path, 'hpdialog.int'), 'w', encoding='utf-16') as hpdialog:
+        hpdialog.write(voicelines_lines)
+    
+    print(dumps(voicelines_langs_amount, indent=4))
+    
+    with open(path.join(storage_path, 'stats_voice.json'), 'w') as stats:
+        stats.write(dumps(voicelines_langs_amount, indent=4))
+        
+    
+    
+    
+    # Get the longest bumplines
+    bumplines = listdir(bumppath)
+    
+    bumplines_lines = "[All]\n"
+    
+    bumplines_langs_amount = {}
+    
+    for bumpline in tqdm(bumplines, desc='All Bumplines', unit="bumpline"):
+        available_langs = listdir(path.join(bumppath, bumpline))
+        current_longest = empty_voiceline
+        for lang in available_langs:
+            with open(path.join(bumppath, bumpline, lang), 'r', encoding='utf-16') as file:
+                lines = file.read()
+                json = loads(lines)
+                vl = voiceline_from_json(json)
+                if vl.duration > 0 and vl.duration > current_longest.duration and vl.exists():
+                    current_longest = vl   
+        if current_longest.key != "":   
+            split = current_longest.voiceLine.split("]")
+            if (len(split) > 1):
+                mood, line = split
+            mood += "]"
+            bumplines_lines += f"{current_longest.key}={mood}[{lang_map[current_longest.lang]}] {line}\n"
+            copy(current_longest.wavFile, path.join(audio_path, f"{current_longest.key}.wav"))
             
-        with open(f'./ready_for_export/{str(folder)}/system/hpdialog.int', 'w', encoding='utf-16') as vl:
-            vl.write(voicelines_str)
+            bumplines_langs_amount[lang_map[current_longest.lang]] = bumplines_langs_amount.get(lang_map[current_longest.lang], 0) + 1
+        else:
+            # print(voiceline, current_longest)
+            pass
         
-        with open(f'./ready_for_export/{str(folder)}/stats.txt', 'w') as st:
-            st.writelines([f"{lang_map[key]} is used {used_langs[key]} times\n" for key in used_langs.keys()])
+    with open(path.join(lines_path, 'BumpDialog.int'), 'w', encoding='utf-16') as bumpdialog:
+        bumpdialog.write(voicelines_lines)
+    
+    print(dumps(bumplines_langs_amount, indent=4))
+    
+    with open(path.join(storage_path, 'stats_bump.json'), 'w') as stats:
+        stats.write(dumps(bumplines_langs_amount, indent=4))
+    
         
-        print(f"Finished: {folder}")
-                
+            
  
   
 if __name__ == '__main__':

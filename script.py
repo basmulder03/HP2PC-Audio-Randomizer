@@ -8,6 +8,7 @@ from shutil import copy
 from tqdm import tqdm
 import logging
 from tqdm.contrib.logging import logging_redirect_tqdm
+from re import escape
 
 LOG = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class VoiceLine:
     def __init__(self, key: str, lang: str, voiceLine: str):
         self.lang = lang
         self.key = key
-        self.voiceLine = voiceLine
+        self.voiceLine = voiceLine.replace('"', '\\"')
         self.wavFile = path.join(cdir, 'langs', lang, 'audio', f"{key}.wav")
         
     def get_wav_file_path(self):
